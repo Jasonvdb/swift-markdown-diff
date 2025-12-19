@@ -8,41 +8,154 @@ struct BlockDiff {
   ///   - newBlocks: The updated block nodes.
   /// - Returns: Block nodes with diff markers applied to inline content.
   static func diff(old oldBlocks: [BlockNode], new newBlocks: [BlockNode]) -> [BlockNode] {
+    // Handle edge cases
+    if oldBlocks.isEmpty && newBlocks.isEmpty {
+      return []
+    }
+    if oldBlocks.isEmpty {
+      return newBlocks.map { markAsInserted($0) }
+    }
+    if newBlocks.isEmpty {
+      return oldBlocks.map { markAsDeleted($0) }
+    }
+
+    // Extract signatures (text content + type) for each block to use as identity
+    let oldSignatures = oldBlocks.map { blockSignature($0) }
+    let newSignatures = newBlocks.map { blockSignature($0) }
+
+    // Use Swift's CollectionDifference (LCS-based) to find optimal alignment
+    let difference = newSignatures.difference(from: oldSignatures)
+
+    // Build sets of removed and inserted indices
+    var removedIndices = Set<Int>()
+    var insertedIndices = Set<Int>()
+
+    for change in difference {
+      switch change {
+      case .remove(let offset, _, _):
+        removedIndices.insert(offset)
+      case .insert(let offset, _, _):
+        insertedIndices.insert(offset)
+      }
+    }
+
+    // Now walk through both arrays and align them properly
     var result: [BlockNode] = []
+    var oldIndex = 0
+    var newIndex = 0
 
-    // Simple block-by-block comparison
-    // For now, we'll do a straightforward alignment approach
-    let maxCount = max(oldBlocks.count, newBlocks.count)
+    while oldIndex < oldBlocks.count || newIndex < newBlocks.count {
+      let oldRemoved = oldIndex < oldBlocks.count && removedIndices.contains(oldIndex)
+      let newInserted = newIndex < newBlocks.count && insertedIndices.contains(newIndex)
 
-    for i in 0..<maxCount {
-      let oldBlock = i < oldBlocks.count ? oldBlocks[i] : nil
-      let newBlock = i < newBlocks.count ? newBlocks[i] : nil
+      // Case 1: Both blocks are marked as changed by LCS
+      // This happens when a block is modified (content changed but same logical block)
+      // If they're the same type, do word-level diff instead of full delete+insert
+      if oldRemoved && newInserted {
+        let oldBlock = oldBlocks[oldIndex]
+        let newBlock = newBlocks[newIndex]
 
-      switch (oldBlock, newBlock) {
-      case (nil, let new?):
-        // Entirely new block - mark all content as inserted
-        result.append(markAsInserted(new))
-
-      case (let old?, nil):
-        // Deleted block - mark all content as deleted
-        result.append(markAsDeleted(old))
-
-      case (let old?, let new?):
-        // Both exist - diff the content
-        if blocksAreSameType(old, new) {
-          result.append(diffBlockContent(old: old, new: new))
+        if blocksAreSameType(oldBlock, newBlock) {
+          // Same type: likely a modification - do word-level diff
+          result.append(diffBlockContent(old: oldBlock, new: newBlock))
+          oldIndex += 1
+          newIndex += 1
         } else {
-          // Different types - show old as deleted, new as inserted
-          result.append(markAsDeleted(old))
-          result.append(markAsInserted(new))
+          // Different types: show deletion first, insertion will be handled next iteration
+          result.append(markAsDeleted(oldBlock))
+          oldIndex += 1
         }
+      }
+      // Case 2: Only old block is removed (deleted block, no corresponding new block here)
+      else if oldRemoved {
+        result.append(markAsDeleted(oldBlocks[oldIndex]))
+        oldIndex += 1
+      }
+      // Case 3: Only new block is inserted (new block, no corresponding old block here)
+      else if newInserted {
+        result.append(markAsInserted(newBlocks[newIndex]))
+        newIndex += 1
+      }
+      // Case 4: Neither changed - blocks are aligned by LCS (identical signatures)
+      else if oldIndex < oldBlocks.count && newIndex < newBlocks.count {
+        let oldBlock = oldBlocks[oldIndex]
+        let newBlock = newBlocks[newIndex]
 
-      case (nil, nil):
-        break
+        if blocksAreSameType(oldBlock, newBlock) {
+          result.append(diffBlockContent(old: oldBlock, new: newBlock))
+        } else {
+          result.append(markAsDeleted(oldBlock))
+          result.append(markAsInserted(newBlock))
+        }
+        oldIndex += 1
+        newIndex += 1
+      }
+      // Case 5: Only old blocks remain
+      else if oldIndex < oldBlocks.count {
+        result.append(markAsDeleted(oldBlocks[oldIndex]))
+        oldIndex += 1
+      }
+      // Case 6: Only new blocks remain
+      else if newIndex < newBlocks.count {
+        result.append(markAsInserted(newBlocks[newIndex]))
+        newIndex += 1
       }
     }
 
     return result
+  }
+
+  /// Creates a signature for a block based on its type and text content.
+  /// This is used for LCS-based matching of blocks.
+  private static func blockSignature(_ block: BlockNode) -> String {
+    let typePrefix: String
+    switch block {
+    case .paragraph: typePrefix = "P:"
+    case .heading(let level, _): typePrefix = "H\(level):"
+    case .codeBlock: typePrefix = "C:"
+    case .blockquote: typePrefix = "Q:"
+    case .bulletedList: typePrefix = "UL:"
+    case .numberedList: typePrefix = "OL:"
+    case .taskList: typePrefix = "TL:"
+    case .table: typePrefix = "T:"
+    case .thematicBreak: typePrefix = "HR"
+    case .htmlBlock: typePrefix = "HTML:"
+    }
+    return typePrefix + extractBlockText(block)
+  }
+
+  /// Extracts plain text from a block node for signature comparison.
+  private static func extractBlockText(_ block: BlockNode) -> String {
+    switch block {
+    case .paragraph(let content):
+      return extractText(from: content)
+    case .heading(_, let content):
+      return extractText(from: content)
+    case .codeBlock(_, let code):
+      return code
+    case .blockquote(let children):
+      return children.map { extractBlockText($0) }.joined(separator: "\n")
+    case .bulletedList(_, let items):
+      return items.map { item in
+        item.children.map { extractBlockText($0) }.joined()
+      }.joined(separator: "\n")
+    case .numberedList(_, _, let items):
+      return items.map { item in
+        item.children.map { extractBlockText($0) }.joined()
+      }.joined(separator: "\n")
+    case .taskList(_, let items):
+      return items.map { item in
+        item.children.map { extractBlockText($0) }.joined()
+      }.joined(separator: "\n")
+    case .table(_, let rows):
+      return rows.map { row in
+        row.cells.map { cell in extractText(from: cell.content) }.joined(separator: " ")
+      }.joined(separator: "\n")
+    case .thematicBreak:
+      return ""
+    case .htmlBlock(let content):
+      return content
+    }
   }
 
   /// Checks if two blocks are of the same structural type.
