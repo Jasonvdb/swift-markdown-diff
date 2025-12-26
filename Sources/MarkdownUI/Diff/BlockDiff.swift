@@ -402,11 +402,18 @@ struct BlockDiff {
   }
 
   /// Checks if the given text is an underline placeholder (consecutive underscores used as fill-in-the-blank).
-  /// Examples: "______", "___", "________"
+  /// Handles trailing punctuation like commas and periods: "______", "___,", "_____."
   private static func isUnderlinePlaceholder(_ text: String) -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespaces)
     guard trimmed.count >= 2 else { return false }
-    return trimmed.allSatisfy { $0 == "_" }
+
+    // Strip trailing punctuation that commonly follows fill-in-the-blank placeholders
+    let trailingPunctuation = CharacterSet(charactersIn: ",.;:!?")
+    let withoutPunctuation = trimmed.trimmingCharacters(in: trailingPunctuation)
+
+    // Must have at least 2 underscores after removing punctuation
+    guard withoutPunctuation.count >= 2 else { return false }
+    return withoutPunctuation.allSatisfy { $0 == "_" }
   }
 
   /// Adds a space between adjacent diffDeleted and diffInserted nodes for readability.
