@@ -235,8 +235,12 @@ struct BlockDiff {
 
     // Check for complete rewrite - preserve formatting by wrapping original nodes
     if changes.count == 2,
-       case .deleted = changes[0],
+       case .deleted(let deletedText) = changes[0],
        case .inserted = changes[1] {
+      // If the deleted content is just underline placeholders, only show the insertion
+      if isUnderlinePlaceholder(deletedText) {
+        return [.diffInserted(children: new)]
+      }
       return [
         .diffDeleted(children: old),
         .text(" "),  // Add space between deleted and inserted
@@ -259,6 +263,11 @@ struct BlockDiff {
         newPos += text.count
 
       case .deleted(let text):
+        // Skip underline placeholders - they don't look good with strikethrough
+        if isUnderlinePlaceholder(text) {
+          oldPos += text.count
+          continue
+        }
         // Extract from old version (preserves original formatting), wrap in deleted
         let extracted = extractInlinesForRange(from: old, fullText: oldText, start: oldPos, length: text.count)
         result.append(.diffDeleted(children: extracted.isEmpty ? [.text(text)] : extracted))
@@ -390,6 +399,14 @@ struct BlockDiff {
     let endOffset = min(start + length, string.count)
     let endIndex = string.index(string.startIndex, offsetBy: endOffset, limitedBy: string.endIndex) ?? string.endIndex
     return String(string[startIndex..<endIndex])
+  }
+
+  /// Checks if the given text is an underline placeholder (consecutive underscores used as fill-in-the-blank).
+  /// Examples: "______", "___", "________"
+  private static func isUnderlinePlaceholder(_ text: String) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespaces)
+    guard trimmed.count >= 2 else { return false }
+    return trimmed.allSatisfy { $0 == "_" }
   }
 
   /// Adds a space between adjacent diffDeleted and diffInserted nodes for readability.
